@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>PoC - Data Cloud Web & Mobile Analytics</title>
+<style>
+  body { font-family: Arial, sans-serif; max-width: 720px; margin: 30px auto; padding: 0 20px; color: #222; }
+  h2 { margin-bottom: 4px; }
+  section { border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin-top: 18px; }
+  section h3 { margin-top: 0; }
+  button { padding: 8px 14px; margin: 6px 6px 6px 0; cursor: pointer; border: none; border-radius: 4px; background: #0b5cab; color: white; }
+  button.secondary { background: #666; }
+  button:disabled { background: #aaa; cursor: not-allowed; }
+  input, select { padding: 8px; margin: 4px 0; width: 100%; box-sizing: border-box; }
+  .product { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #eee; padding: 8px 0; }
+  .product small { color: #777; }
+  #log { background: #111; color: #0f0; padding: 12px; font-family: monospace; font-size: 12px; height: 220px; overflow-y: auto; margin-top: 20px; white-space: pre-wrap; }
+  .badge { display: inline-block; background: #eef3fb; color: #0b5cab; border-radius: 12px; padding: 2px 10px; font-size: 12px; margin-left: 6px; }
+  .cart-item { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px dashed #ddd; }
+  #userStatus { font-weight: bold; }
+  #inactivityNote { color: #a15c00; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<h2>PoC Data Cloud - Captura de Eventos</h2>
+<p>Simula: <b>login</b>, navegación de catálogo, <b>carrito de compras</b>, <b>abandono de carrito</b> y <b>compra</b>, para inferir intereses por categoría de producto (útil para tu estrategia NBO).</p>
+
+<!-- =========================================================
+     REEMPLAZAR por el snippet real del Data Stream "Web & App"
+     de tu sandbox de Data Cloud:
+
+     <script src="https://SUBDOMAIN.collect.data.sfdc.com/tags/js/APP_ID.js" async></script>
+
+     Ajusta también el método real de tracking en sendEvent()
+     (puede llamarse track, sendEvent, etc. según tu SDK).
+     ========================================================== -->
+<script>
+  window.dlSDKReady = false; // cambiar a true cuando insertes el snippet real
+</script>
+
+<section>
+  <h3>1. Inicio de sesión</h3>
+  <p id="userStatus">Estado: No autenticado</p>
+  <div id="loginBox">
+    <input type="text" id="loginUser" placeholder="Usuario o email">
+    <input type="password" id="loginPass" placeholder="Contraseña (cualquier valor)">
+    <button onclick="doLogin()">Iniciar sesión</button>
+  </div>
+  <button id="logoutBtn" class="secondary" style="display:none" onclick="doLogout()">Cerrar sesión</button>
+</section>
+
+<section>
+  <h3>2. Catálogo</h3>
+  <div id="catalog"></div>
+</section>
+
+<section>
+  <h3>3. Carrito de compras</h3>
+  <div id="cartBox"><em>Carrito vacío</em></div>
+  <p><b>Total:</b> $<span id="cartTotal">0</span></p>
+  <button onclick="checkout()">Finalizar compra</button>
+  <button class="secondary" onclick="clearCart()">Vaciar carrito</button>
+  <p id="inactivityNote"></p>
+  <p id="checkoutMsg" style="font-weight:bold;"></p>
+</section>
+
+<h3>Log de eventos enviados</h3>
+<div id="log"></div>
+
+<script>
+  // ---------- Estado en memoria (sin localStorage, es solo un PoC) ----------
+  const state = {
+    user: null,
+    cart: [],
+    purchased: false,
+    lastActivity: Date.now(),
+    abandonTracked: false
+  };
+
+  const catalog = [
+    { id: 'p1', name: 'Plan Móvil Ilimitado 20GB', category: 'plan_movil', price: 59900 },
+    { id: 'p2', name: 'Internet Hogar 300MB', category: 'internet_hogar', price: 89900 },
+    { id: 'p3', name: 'Paquete TV + Streaming', category: 'tv_streaming', price: 49900 },
+    { id: 'p4', name: 'Roaming Internacional 7 días', category: 'roaming_internacional', price: 39900 },
+    { id: 'p5', name: 'Router WiFi 6', category: 'accesorios', price: 199900 }
+  ];
+
+  function log(msg) {
+    const el = document.getElementById('log');
+    const time = new Date().toLocaleTimeString();
+    el.textContent += `[${time}] ${msg}\n\n`;
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function sendEvent(eventName, payload) {
+    const enriched = { ...payload, user_id: state.user ? state.user.id : 'anonimo', timestamp: new Date().toISOString() };
+    if (window.dlSDKReady && typeof window.dl === 'object') {
+      window.dl.track(eventName, enriched);
+      log(`[ENVIADO A DATA CLOUD] ${eventName} -> ${JSON.stringify(enriched)}`);
+    } else {
+      log(`[SIMULADO] ${eventName} -> ${JSON.stringify(enriched)}`);
+    }
+  }
+
+  function markActivity() {
+    state.lastActivity = Date.now();
+    document.getElementById('inactivityNote').textContent = '';
+  }
+
+  function doLogin() {
+    const user = document.getElementById('loginUser').value.trim();
+    if (!user) { document.getElementById('checkoutMsg').textContent = 'Ingresa un usuario para iniciar sesión.'; return; }
+    state.user = { id: 'usr_' + user.toLowerCase().replace(/\s+/g,'_'), username: user };
+    document.getElementById('userStatus').textContent = `Estado: autenticado como ${user}`;
+    document.getElementById('loginBox').style.display = 'none';
+    document.getElementById('logoutBtn').style.display = 'inline-block';
+    sendEvent('login', { username: user });
+    markActivity();
+  }
+
+  function doLogout() {
+    sendEvent('logout', { username: state.user ? state.user.username : null });
+    state.user = null;
+    document.getElementById('userStatus').textContent = 'Estado: No autenticado';
+    document.getElementById('loginBox').style.display = 'block';
+    document.getElementById('logoutBtn').style.display = 'none';
+    markActivity();
+  }
+
+  function renderCatalog() {
+    const box = document.getElementById('catalog');
+    box.innerHTML = '';
+    catalog.forEach(p => {
+      const row = document.createElement('div');
+      row.className = 'product';
+      row.innerHTML = `
+        <div>${p.name} <span class="badge">${p.category}</span><br><small>$${p.price.toLocaleString()}</small></div>
+        <button onclick="addToCart('${p.id}')">Agregar al carrito</button>
+      `;
+      box.appendChild(row);
+    });
+  }
+
+  function addToCart(productId) {
+    const p = catalog.find(x => x.id === productId);
+    const existing = state.cart.find(x => x.id === productId);
+    if (existing) existing.qty += 1;
+    else state.cart.push({ ...p, qty: 1 });
+    state.abandonTracked = false;
+    renderCart();
+    sendEvent('add_to_cart', { product_id: p.id, product_name: p.name, categoria: p.category, precio: p.price });
+    markActivity();
+  }
+
+  function renderCart() {
+    const box = document.getElementById('cartBox');
+    if (state.cart.length === 0) {
+      box.innerHTML = '<em>Carrito vacío</em>';
+      document.getElementById('cartTotal').textContent = '0';
+      return;
+    }
+    box.innerHTML = '';
+    let total = 0;
+    state.cart.forEach(item => {
+      total += item.price * item.qty;
+      const row = document.createElement('div');
+      row.className = 'cart-item';
+      row.innerHTML = `<span>${item.name} x${item.qty} <span class="badge">${item.category}</span></span><span>$${(item.price*item.qty).toLocaleString()}</span>`;
+      box.appendChild(row);
+    });
+    document.getElementById('cartTotal').textContent = total.toLocaleString();
+  }
+
+  function clearCart() {
+    state.cart = [];
+    renderCart();
+    markActivity();
+  }
+
+  function interestsFromCart() {
+    const counts = {};
+    state.cart.forEach(i => { counts[i.category] = (counts[i.category] || 0) + i.qty; });
+    return counts;
+  }
+
+  function checkout() {
+    const msgBox = document.getElementById('checkoutMsg');
+    msgBox.style.color = '#a10000';
+    if (state.cart.length === 0) { msgBox.textContent = 'El carrito está vacío.'; return; }
+    if (!state.user) { msgBox.textContent = 'Debes iniciar sesión para finalizar la compra.'; return; }
+    const total = state.cart.reduce((s, i) => s + i.price * i.qty, 0);
+    const intereses = interestsFromCart();
+    sendEvent('purchase', {
+      items: state.cart.map(i => ({ product_id: i.id, categoria: i.category, qty: i.qty, precio: i.price })),
+      total,
+      intereses_por_categoria: intereses
+    });
+    const topCategoria = Object.entries(intereses).sort((a,b) => b[1]-a[1])[0];
+    sendEvent('customer_interest_profile', {
+      categoria_principal: topCategoria ? topCategoria[0] : null,
+      detalle: intereses
+    });
+    state.purchased = true;
+    state.cart = [];
+    renderCart();
+    msgBox.style.color = '#0a7d2c';
+    msgBox.textContent = '✔ Compra finalizada. Revisa el log de eventos abajo.';
+  }
+
+  setInterval(() => {
+    const inactiveMs = Date.now() - state.lastActivity;
+    const threshold = 15000;
+    if (state.cart.length > 0 && !state.purchased && !state.abandonTracked) {
+      const remaining = Math.max(0, threshold - inactiveMs);
+      document.getElementById('inactivityNote').textContent = remaining > 0
+        ? `Carrito con productos, inactivo hace ${Math.round(inactiveMs/1000)}s (se marcará abandonado en ${Math.round(remaining/1000)}s si no hay actividad)`
+        : '';
+      if (inactiveMs > threshold) {
+        state.abandonTracked = true;
+        sendEvent('cart_abandoned', {
+          items: state.cart.map(i => ({ product_id: i.id, categoria: i.category, qty: i.qty })),
+          intereses_por_categoria: interestsFromCart(),
+          inactivo_segundos: Math.round(inactiveMs/1000)
+        });
+        document.getElementById('inactivityNote').textContent = 'Carrito marcado como abandonado.';
+      }
+    }
+  }, 2000);
+
+  window.addEventListener('beforeunload', () => {
+    if (state.cart.length > 0 && !state.purchased && !state.abandonTracked) {
+      sendEvent('cart_abandoned', {
+        items: state.cart.map(i => ({ product_id: i.id, categoria: i.category, qty: i.qty })),
+        intereses_por_categoria: interestsFromCart(),
+        motivo: 'cierre_de_pagina'
+      });
+    }
+  });
+
+  ['click','keydown','mousemove'].forEach(evt => document.addEventListener(evt, markActivity));
+
+  window.addEventListener('load', () => {
+    sendEvent('page_view', { url: window.location.href, title: document.title });
+    renderCatalog();
+    renderCart();
+  });
+</script>
+
+</body>
+</html>
