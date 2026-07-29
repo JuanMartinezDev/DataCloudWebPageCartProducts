@@ -27,17 +27,9 @@
 <p>Simula: <b>login</b>, navegación de catálogo, <b>carrito de compras</b>, <b>abandono de carrito</b> y <b>compra</b>, para inferir intereses por categoría de producto (útil para tu estrategia NBO).</p>
 
 <!-- =========================================================
-     REEMPLAZAR por el snippet real del Data Stream "Web & App"
-     de tu sandbox de Data Cloud:
-
-     <script src="https://SUBDOMAIN.collect.data.sfdc.com/tags/js/APP_ID.js" async></script>
-
-     Ajusta también el método real de tracking en sendEvent()
-     (puede llamarse track, sendEvent, etc. según tu SDK).
+     SDK oficial de SalesforceInteractions
      ========================================================== -->
-<script>
-  window.dlSDKReady = false; // cambiar a true cuando insertes el snippet real
-</script>
+<script src="https://cdn.c360a.salesforce.com/beacon/c360a/385dc998-ddaf-4ce8-8835-d3c0f234c007/scripts/c360a.min.js" async></script>
 
 <section>
   <h3>1. Inicio de sesión</h3>
@@ -69,7 +61,7 @@
 <div id="log"></div>
 
 <script>
-  // ---------- Estado en memoria (sin localStorage, es solo un PoC) ----------
+  // ---------- Estado en memoria (sin localStorage, solo para el PoC) ----------
   const state = {
     user: null,
     cart: [],
@@ -86,6 +78,15 @@
     { id: 'p5', name: 'Router WiFi 6', category: 'accesorios', price: 199900 }
   ];
 
+  const SALESFORCE_INTERACTION_NAMES = {
+    LOGIN: 'Login'
+  };
+
+  const DEFAULT_CURRENCY = 'COP';
+  const DEFAULT_ORDER_ID = 'ORD-1001';
+  const ABANDONMENT_THRESHOLD_MS = 15000;
+
+  // ---------- Utilidades de logging y SDK ----------
   function log(msg) {
     const el = document.getElementById('log');
     const time = new Date().toLocaleTimeString();
@@ -93,14 +94,61 @@
     el.scrollTop = el.scrollHeight;
   }
 
-  function sendEvent(eventName, payload) {
-    const enriched = { ...payload, user_id: state.user ? state.user.id : 'anonimo', timestamp: new Date().toISOString() };
-    if (window.dlSDKReady && typeof window.dl === 'object') {
-      window.dl.track(eventName, enriched);
-      log(`[ENVIADO A DATA CLOUD] ${eventName} -> ${JSON.stringify(enriched)}`);
+  function getSalesforceClient() {
+    return window.SalesforceInteractions || {};
+  }
+
+  function sendSalesforceEvent(eventName, payload) {
+    const sdk = getSalesforceClient();
+    if (typeof sdk.sendEvent === 'function') {
+      sdk.sendEvent(payload);
+      log(`[Salesforce]\n${eventName}\n${JSON.stringify(payload, null, 2)}`);
     } else {
-      log(`[SIMULADO] ${eventName} -> ${JSON.stringify(enriched)}`);
+      log(`[Salesforce] SDK no disponible para ${eventName}\n${JSON.stringify(payload, null, 2)}`);
     }
+  }
+
+  function initSalesforceInteractions() {
+    const sdk = getSalesforceClient();
+    if (typeof sdk.init === 'function') {
+      // sdk.init();
+    }
+  }
+
+  function getEventContext() {
+    return {
+      user: state.user ? {
+        identities: {
+          email: state.user.email || state.user.username || ''
+        }
+      } : undefined
+    };
+  }
+
+  function normalizeCartItem(item) {
+    return {
+      id: item.id || item.product_id || item.sku || '',
+      type: item.type || item.category || item.categoria || 'Product',
+      name: item.name || item.product_name || item.productName || '',
+      price: item.price || item.precio || 0,
+      currency: item.currency || DEFAULT_CURRENCY,
+      quantity: item.quantity || item.qty || 1
+    };
+  }
+
+  function buildCartPayload(items) {
+    return {
+      items: (items || []).map(normalizeCartItem)
+    };
+  }
+
+  function buildOrderPayload(items, totalValue) {
+    return {
+      id: DEFAULT_ORDER_ID,
+      currency: DEFAULT_CURRENCY,
+      totalValue: totalValue || 0,
+      items: (items || []).map(normalizeCartItem)
+    };
   }
 
   function markActivity() {
@@ -108,19 +156,36 @@
     document.getElementById('inactivityNote').textContent = '';
   }
 
+  // ---------- Autenticación ----------
   function doLogin() {
     const user = document.getElementById('loginUser').value.trim();
-    if (!user) { document.getElementById('checkoutMsg').textContent = 'Ingresa un usuario para iniciar sesión.'; return; }
-    state.user = { id: 'usr_' + user.toLowerCase().replace(/\s+/g,'_'), username: user };
+    if (!user) {
+      document.getElementById('checkoutMsg').textContent = 'Ingresa un usuario para iniciar sesión.';
+      return;
+    }
+
+    state.user = {
+      id: 'usr_' + user.toLowerCase().replace(/\s+/g, '_'),
+      username: user,
+      email: user
+    };
+
     document.getElementById('userStatus').textContent = `Estado: autenticado como ${user}`;
     document.getElementById('loginBox').style.display = 'none';
     document.getElementById('logoutBtn').style.display = 'inline-block';
-    sendEvent('login', { username: user });
+
+    const context = getEventContext();
+    sendSalesforceEvent('Login', {
+      interaction: {
+        name: SALESFORCE_INTERACTION_NAMES.LOGIN
+      },
+      user: context.user
+    });
+
     markActivity();
   }
 
   function doLogout() {
-    sendEvent('logout', { username: state.user ? state.user.username : null });
     state.user = null;
     document.getElementById('userStatus').textContent = 'Estado: No autenticado';
     document.getElementById('loginBox').style.display = 'block';
@@ -128,6 +193,7 @@
     markActivity();
   }
 
+  // ---------- Catálogo ----------
   function renderCatalog() {
     const box = document.getElementById('catalog');
     box.innerHTML = '';
@@ -142,14 +208,41 @@
     });
   }
 
+  // ---------- Carrito ----------
   function addToCart(productId) {
     const p = catalog.find(x => x.id === productId);
     const existing = state.cart.find(x => x.id === productId);
     if (existing) existing.qty += 1;
     else state.cart.push({ ...p, qty: 1 });
+
     state.abandonTracked = false;
     renderCart();
-    sendEvent('add_to_cart', { product_id: p.id, product_name: p.name, categoria: p.category, precio: p.price });
+
+    const cartItem = normalizeCartItem({
+      id: p.id,
+      type: p.category,
+      name: p.name,
+      price: p.price,
+      currency: DEFAULT_CURRENCY,
+      quantity: 1
+    });
+
+    const context = getEventContext();
+    sendSalesforceEvent('Add To Cart', {
+      interaction: {
+        name: getSalesforceClient().CartInteractionName?.AddToCart || 'AddToCart'
+      },
+      cart: buildCartPayload([cartItem]),
+      product: {
+        id: cartItem.id,
+        type: cartItem.type,
+        name: cartItem.name,
+        price: cartItem.price,
+        currency: cartItem.currency
+      },
+      user: context.user
+    });
+
     markActivity();
   }
 
@@ -160,15 +253,17 @@
       document.getElementById('cartTotal').textContent = '0';
       return;
     }
+
     box.innerHTML = '';
     let total = 0;
     state.cart.forEach(item => {
       total += item.price * item.qty;
       const row = document.createElement('div');
       row.className = 'cart-item';
-      row.innerHTML = `<span>${item.name} x${item.qty} <span class="badge">${item.category}</span></span><span>$${(item.price*item.qty).toLocaleString()}</span>`;
+      row.innerHTML = `<span>${item.name} x${item.qty} <span class="badge">${item.category}</span></span><span>$${(item.price * item.qty).toLocaleString()}</span>`;
       box.appendChild(row);
     });
+
     document.getElementById('cartTotal').textContent = total.toLocaleString();
   }
 
@@ -178,29 +273,38 @@
     markActivity();
   }
 
-  function interestsFromCart() {
-    const counts = {};
-    state.cart.forEach(i => { counts[i.category] = (counts[i.category] || 0) + i.qty; });
-    return counts;
-  }
-
+  // ---------- Compra ----------
   function checkout() {
     const msgBox = document.getElementById('checkoutMsg');
     msgBox.style.color = '#a10000';
-    if (state.cart.length === 0) { msgBox.textContent = 'El carrito está vacío.'; return; }
-    if (!state.user) { msgBox.textContent = 'Debes iniciar sesión para finalizar la compra.'; return; }
+
+    if (state.cart.length === 0) {
+      msgBox.textContent = 'El carrito está vacío.';
+      return;
+    }
+    if (!state.user) {
+      msgBox.textContent = 'Debes iniciar sesión para finalizar la compra.';
+      return;
+    }
+
     const total = state.cart.reduce((s, i) => s + i.price * i.qty, 0);
-    const intereses = interestsFromCart();
-    sendEvent('purchase', {
-      items: state.cart.map(i => ({ product_id: i.id, categoria: i.category, qty: i.qty, precio: i.price })),
-      total,
-      intereses_por_categoria: intereses
+    const context = getEventContext();
+
+    sendSalesforceEvent('Purchase', {
+      interaction: {
+        name: getSalesforceClient().OrderInteractionName?.Purchase || 'Purchase'
+      },
+      order: buildOrderPayload(state.cart.map(i => ({
+        id: i.id,
+        type: i.category,
+        name: i.name,
+        price: i.price,
+        currency: DEFAULT_CURRENCY,
+        quantity: i.qty
+      })), total),
+      user: context.user
     });
-    const topCategoria = Object.entries(intereses).sort((a,b) => b[1]-a[1])[0];
-    sendEvent('customer_interest_profile', {
-      categoria_principal: topCategoria ? topCategoria[0] : null,
-      detalle: intereses
-    });
+
     state.purchased = true;
     state.cart = [];
     renderCart();
@@ -208,40 +312,35 @@
     msgBox.textContent = '✔ Compra finalizada. Revisa el log de eventos abajo.';
   }
 
+  // ---------- Abandono de carrito ----------
   setInterval(() => {
     const inactiveMs = Date.now() - state.lastActivity;
-    const threshold = 15000;
+    const remaining = Math.max(0, ABANDONMENT_THRESHOLD_MS - inactiveMs);
+
     if (state.cart.length > 0 && !state.purchased && !state.abandonTracked) {
-      const remaining = Math.max(0, threshold - inactiveMs);
       document.getElementById('inactivityNote').textContent = remaining > 0
-        ? `Carrito con productos, inactivo hace ${Math.round(inactiveMs/1000)}s (se marcará abandonado en ${Math.round(remaining/1000)}s si no hay actividad)`
+        ? `Carrito con productos, inactivo hace ${Math.round(inactiveMs / 1000)}s (se marcará abandonado en ${Math.round(remaining / 1000)}s si no hay actividad)`
         : '';
-      if (inactiveMs > threshold) {
+
+      if (inactiveMs > ABANDONMENT_THRESHOLD_MS) {
         state.abandonTracked = true;
-        sendEvent('cart_abandoned', {
-          items: state.cart.map(i => ({ product_id: i.id, categoria: i.category, qty: i.qty })),
-          intereses_por_categoria: interestsFromCart(),
-          inactivo_segundos: Math.round(inactiveMs/1000)
-        });
-        document.getElementById('inactivityNote').textContent = 'Carrito marcado como abandonado.';
+        document.getElementById('inactivityNote').textContent = 'Carrito marcado como abandonado. El seguimiento se completará en Data Cloud mediante segmentación.';
+        log('[Salesforce] Abandono de carrito pendiente de inferencia en Data Cloud mediante segmentación.');
       }
     }
   }, 2000);
 
   window.addEventListener('beforeunload', () => {
     if (state.cart.length > 0 && !state.purchased && !state.abandonTracked) {
-      sendEvent('cart_abandoned', {
-        items: state.cart.map(i => ({ product_id: i.id, categoria: i.category, qty: i.qty })),
-        intereses_por_categoria: interestsFromCart(),
-        motivo: 'cierre_de_pagina'
-      });
+      log('[Salesforce] Abandono de carrito pendiente de inferencia en Data Cloud mediante segmentación.');
     }
   });
 
-  ['click','keydown','mousemove'].forEach(evt => document.addEventListener(evt, markActivity));
+  ['click', 'keydown', 'mousemove'].forEach(evt => document.addEventListener(evt, markActivity));
 
+  // ---------- Inicialización ----------
   window.addEventListener('load', () => {
-    sendEvent('page_view', { url: window.location.href, title: document.title });
+    initSalesforceInteractions();
     renderCatalog();
     renderCart();
   });
